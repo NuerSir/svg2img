@@ -1,0 +1,25 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run index.ts (Deno)",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/index.ts",
+      "cwd": "${workspaceFolder}",
+      "runtimeExecutable": "deno",
+      "runtimeArgs": ["run", "--inspect-brk", "--no-check"],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Run update-wasm.ts (script)",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/update-wasm.ts",
+      "cwd": "${workspaceFolder}",
+      "runtimeExecutable": "deno",
+      "runtimeArgs": ["run", "--allow-net", "--allow-write", "--no-check"],
+      "console": "integratedTerminal"
+    }
+  ]
+}

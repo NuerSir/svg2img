@@ -1,0 +1,9 @@
+
+{
+	"deno.enable": true,
+	"deno.lint": true,
+	"editor.formatOnSave": true,
+	"files.exclude": {
+		"svg2png.wasm": true
+	}
+}

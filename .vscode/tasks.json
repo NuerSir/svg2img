@@ -1,0 +1,12 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "deno: check",
+      "type": "shell",
+      "command": "deno check --allow-import .",
+      "presentation": { "reveal": "silent" },
+      "group": { "kind": "build", "isDefault": true }
+    }
+  ]
+}
