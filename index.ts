@@ -15,8 +15,23 @@ import {
   withTimeout,
   createError,
   SVG2ImageError,
+  CacheManager,
   type RenderOptions,
 } from "./utils.ts";
+
+// 全局缓存管理器
+let cacheManager: CacheManager | null = null;
+
+// 初始化缓存管理器
+async function initializeCache(): Promise<void> {
+  try {
+    cacheManager = new CacheManager(CONFIG.CACHE.ENABLED);
+    await cacheManager.init(CONFIG.CACHE.KV_TYPE);
+  } catch (error) {
+    console.warn('⚠️ Cache initialization failed:', error);
+    cacheManager = null;
+  }
+}
 
 // 核心渲染函数
 async function renderSvgToImage(svgContent: string, options: RenderOptions): Promise<Uint8Array> {
@@ -168,12 +183,28 @@ async function handleGetRequest(request: Request): Promise<Response> {
     // 获取 SVG 内容
     const svgContent = await fetchSvgContent(params.svgUrl);
 
-    // 渲染图片
+    // 检查缓存
+    if (cacheManager) {
+      const cachedResponse = await cacheManager.checkCacheAndRespond(svgContent, options);
+      if (cachedResponse) {
+        return cachedResponse;
+      }
+    }
+
+    // 缓存未命中，渲染图片
+    console.log(`🔄 Rendering new image...`);
     const imageBuffer = await renderSvgToImage(svgContent, options);
+
+    // 始终上传到 Storage 以支持缓存（即使是 binary 类型）
+    const url = await uploadToStorage(imageBuffer, options.format, options.urlExpiry, svgContent, options);
+
+    // 存储到缓存
+    if (cacheManager) {
+      await cacheManager.setCacheEntry(svgContent, options, url);
+    }
 
     // 根据返回类型返回响应
     if (options.returnType === 'url') {
-      const url = await uploadToStorage(imageBuffer, options.format, options.urlExpiry, svgContent, options);
       return createUrlResponse(url, options.urlExpiry);
     } else {
       return createImageResponse(imageBuffer, options.format);
@@ -195,12 +226,28 @@ async function handlePostRequest(request: Request): Promise<Response> {
     const body = await parsePostRequest(request);
     const options = normalizeRenderOptions(body);
 
-    // 渲染图片
+    // 检查缓存
+    if (cacheManager) {
+      const cachedResponse = await cacheManager.checkCacheAndRespond(body.svg, options);
+      if (cachedResponse) {
+        return cachedResponse;
+      }
+    }
+
+    // 缓存未命中，渲染图片
+    console.log(`🔄 Rendering new image...`);
     const imageBuffer = await renderSvgToImage(body.svg, options);
+
+    // 始终上传到 Storage 以支持缓存（即使是 binary 类型）
+    const url = await uploadToStorage(imageBuffer, options.format, options.urlExpiry, body.svg, options);
+
+    // 存储到缓存
+    if (cacheManager) {
+      await cacheManager.setCacheEntry(body.svg, options, url);
+    }
 
     // 根据返回类型返回响应
     if (options.returnType === 'url') {
-      const url = await uploadToStorage(imageBuffer, options.format, options.urlExpiry, body.svg, options);
       return createUrlResponse(url, options.urlExpiry);
     } else {
       return createImageResponse(imageBuffer, options.format);
@@ -259,6 +306,9 @@ if (!configValidation.valid) {
   configValidation.errors.forEach(error => console.error(`  - ${error}`));
   Deno.exit(1);
 }
+
+// 初始化缓存
+await initializeCache();
 
 // 打印配置信息
 printConfig();

@@ -80,6 +80,7 @@ const ERROR_DEFINITIONS = {
   RENDER_ERROR: { status: 500, message: "Rendering failed" },
   STORAGE_UPLOAD_FAILED: { status: 500, message: "Failed to upload to storage" },
   STORAGE_CONFIG_ERROR: { status: 500, message: "Storage configuration error" },
+  CACHE_ERROR: { status: 500, message: "Cache operation failed" },
   INTERNAL_ERROR: { status: 500, message: "Internal server error" },
 } as const;
 
@@ -361,7 +362,7 @@ export function generateHtmlTemplate(svgContent: string, backgroundColor: string
 }
 
 // 生成参数哈希，用于缓存和文件命名
-async function generateParamsHash(svgContent: string, options: RenderOptions): Promise<string> {
+export async function generateParamsHash(svgContent: string, options: RenderOptions): Promise<string> {
   // 创建包含所有影响渲染结果的参数的字符串
   const paramString = JSON.stringify({
     svg: svgContent,
@@ -517,4 +518,252 @@ export function createUrlResponse(url: string, expiry: number): Response {
       },
     }
   );
+}
+
+// ========================= 缓存系统 =========================
+
+// 缓存条目接口
+export interface CacheEntry {
+  storageUrl: string;      // Supabase Storage 的签名 URL
+  urlExpiresAt: number;    // 签名 URL 的过期时间
+  format: ImageFormat;     // 图片格式
+  createdAt: number;       // 创建时间
+}
+
+// KV 适配器接口 - 支持多种 KV 提供商
+export interface KVAdapter {
+  get(key: string): Promise<CacheEntry | null>;
+  set(key: string, value: CacheEntry, ttlSeconds: number): Promise<void>;
+  delete(key: string): Promise<void>;
+  init?(): Promise<void>;
+  close?(): Promise<void>;
+}
+
+// Deno KV 适配器实现
+export class DenoKVAdapter implements KVAdapter {
+  private kv: Deno.Kv | null = null;
+
+  async init(): Promise<void> {
+    try {
+      // 检查 Deno.openKv 是否可用
+      if (typeof Deno.openKv !== 'function') {
+        throw new Error('Deno.openKv is not available. Please run with --unstable-kv flag.');
+      }
+
+      this.kv = await Deno.openKv();
+      console.log('🔗 Deno KV initialized successfully');
+    } catch (error) {
+      console.warn('⚠️ Failed to initialize Deno KV:', error);
+      throw createError("CACHE_ERROR", `Failed to initialize Deno KV: ${(error as Error).message}`);
+    }
+  }
+
+  async get(key: string): Promise<CacheEntry | null> {
+    if (!this.kv) return null;
+
+    try {
+      const result = await this.kv.get([key]);
+      return result.value as CacheEntry | null;
+    } catch (error) {
+      console.warn('⚠️ KV get failed:', error);
+      return null; // 优雅降级，不抛出错误
+    }
+  }
+
+  async set(key: string, value: CacheEntry, ttlSeconds: number): Promise<void> {
+    if (!this.kv) return;
+
+    try {
+      await this.kv.set([key], value, { expireIn: ttlSeconds * 1000 });
+    } catch (error) {
+      console.warn('⚠️ KV set failed:', error);
+      // 不抛出错误，允许继续执行
+    }
+  }
+
+  async delete(key: string): Promise<void> {
+    if (!this.kv) return;
+
+    try {
+      await this.kv.delete([key]);
+    } catch (error) {
+      console.warn('⚠️ KV delete failed:', error);
+    }
+  }
+
+  async close(): Promise<void> {
+    if (this.kv) {
+      this.kv.close();
+      this.kv = null;
+    }
+  }
+}
+
+// Vercel KV 适配器（未来实现）
+export class VercelKVAdapter implements KVAdapter {
+  init(): Promise<void> {
+    throw new Error("Vercel KV adapter not implemented yet");
+  }
+
+  get(_key: string): Promise<CacheEntry | null> {
+    throw new Error("Vercel KV adapter not implemented yet");
+  }
+
+  set(_key: string, _value: CacheEntry, _ttlSeconds: number): Promise<void> {
+    throw new Error("Vercel KV adapter not implemented yet");
+  }
+
+  delete(_key: string): Promise<void> {
+    throw new Error("Vercel KV adapter not implemented yet");
+  }
+}
+
+// Cloudflare KV 适配器（未来实现）
+export class CloudflareKVAdapter implements KVAdapter {
+  init(): Promise<void> {
+    throw new Error("Cloudflare KV adapter not implemented yet");
+  }
+
+  get(_key: string): Promise<CacheEntry | null> {
+    throw new Error("Cloudflare KV adapter not implemented yet");
+  }
+
+  set(_key: string, _value: CacheEntry, _ttlSeconds: number): Promise<void> {
+    throw new Error("Cloudflare KV adapter not implemented yet");
+  }
+
+  delete(_key: string): Promise<void> {
+    throw new Error("Cloudflare KV adapter not implemented yet");
+  }
+
+  close(): Promise<void> {
+    // No-op for future implementation
+    return Promise.resolve();
+  }
+}
+
+// KV 工厂类
+export class KVFactory {
+  static create(type: 'deno' | 'vercel' | 'cloudflare'): KVAdapter {
+    switch (type) {
+      case 'deno':
+        return new DenoKVAdapter();
+      case 'vercel':
+        return new VercelKVAdapter();
+      case 'cloudflare':
+        return new CloudflareKVAdapter();
+      default:
+        throw createError("CACHE_ERROR", `Unsupported KV type: ${type}`);
+    }
+  }
+}
+
+// 缓存管理器
+export class CacheManager {
+  private kvAdapter: KVAdapter | null = null;
+  private enabled: boolean;
+
+  constructor(enabled: boolean = true) {
+    this.enabled = enabled;
+  }
+
+  async init(kvType: 'deno' | 'vercel' | 'cloudflare'): Promise<void> {
+    if (!this.enabled) {
+      console.log('📋 Cache disabled');
+      return;
+    }
+
+    try {
+      this.kvAdapter = KVFactory.create(kvType);
+      await this.kvAdapter.init?.();
+      console.log(`🎯 Cache initialized with ${kvType} KV`);
+    } catch (error) {
+      console.warn('⚠️ Cache initialization failed, running without cache:', error);
+      this.kvAdapter = null;
+    }
+  }
+
+  // 检查缓存并返回响应（如果命中）
+  async checkCacheAndRespond(svgContent: string, options: RenderOptions): Promise<Response | null> {
+    if (!this.kvAdapter) return null;
+
+    try {
+      const hash = await generateParamsHash(svgContent, options);
+      const cacheKey = `svg2img:${hash}:${options.format}`;
+
+      const cached = await this.kvAdapter.get(cacheKey);
+
+      if (cached && cached.urlExpiresAt > Date.now()) {
+        console.log(`🎯 Cache hit: ${hash.substring(0, 8)}... (${options.format})`);
+
+        if (options.returnType === 'url') {
+          // 直接返回缓存的 URL
+          const remainingExpiry = Math.floor((cached.urlExpiresAt - Date.now()) / 1000);
+          return createUrlResponse(cached.storageUrl, remainingExpiry);
+        } else {
+          // return_type='binary'，使用 HTTP 重定向到 Storage URL
+          return new Response(null, {
+            status: 302, // Found - 临时重定向
+            headers: {
+              'Location': cached.storageUrl,
+              'Cache-Control': 'no-cache'
+            }
+          });
+        }
+      }
+
+      // 缓存过期，清理
+      if (cached && cached.urlExpiresAt <= Date.now()) {
+        await this.kvAdapter.delete(cacheKey);
+        console.log(`🗑️ Expired cache cleared: ${hash.substring(0, 8)}...`);
+      }
+
+      return null; // 缓存未命中
+    } catch (error) {
+      console.warn('⚠️ Cache check failed:', error);
+      return null; // 优雅降级
+    }
+  }
+
+  // 设置缓存条目
+  async setCacheEntry(svgContent: string, options: RenderOptions, storageUrl: string): Promise<void> {
+    if (!this.kvAdapter) return;
+
+    try {
+      const hash = await generateParamsHash(svgContent, options);
+      const cacheKey = `svg2img:${hash}:${options.format}`;
+
+      const entry: CacheEntry = {
+        storageUrl,
+        urlExpiresAt: Date.now() + options.urlExpiry * 1000,
+        format: options.format,
+        createdAt: Date.now()
+      };
+
+      await this.kvAdapter.set(cacheKey, entry, options.urlExpiry);
+      console.log(`💾 Cache stored: ${hash.substring(0, 8)}... (${options.format})`);
+    } catch (error) {
+      console.warn('⚠️ Cache set failed:', error);
+      // 不抛出错误，允许继续执行
+    }
+  }
+
+  async close(): Promise<void> {
+    if (this.kvAdapter) {
+      await this.kvAdapter.close?.();
+      this.kvAdapter = null;
+    }
+  }
+}
+
+// 创建重定向响应（用于 binary 类型的缓存命中）
+export function createRedirectResponse(url: string): Response {
+  return new Response(null, {
+    status: 302, // Found - 临时重定向
+    headers: {
+      'Location': url,
+      'Cache-Control': 'no-cache',
+      'Access-Control-Allow-Origin': '*'
+    }
+  });
 }

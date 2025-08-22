@@ -38,6 +38,10 @@ interface ConfigOverrides {
   SUPABASE_URL?: string;
   SUPABASE_ANON_KEY?: string;
   SUPABASE_STORAGE_BUCKET?: string;
+
+  // 缓存配置
+  CACHE_ENABLED?: string;
+  CACHE_KV_TYPE?: string;
 }
 
 // 配置覆盖 - 直接在这里设置值来覆盖环境变量（部署时修改）
@@ -97,7 +101,7 @@ export const CONFIG = {
     BACKGROUND_COLOR: getEnvValue('DEFAULT_BACKGROUND_COLOR', '#ffffff'),
     WAIT_FOR: parseNumber(getEnvValue('DEFAULT_WAIT_FOR'), 1000),
     RETURN_TYPE: getEnvValue('DEFAULT_RETURN_TYPE', 'binary') as 'binary' | 'url',
-    URL_EXPIRY: parseNumber(getEnvValue('DEFAULT_URL_EXPIRY'), 3600), // 1小时
+    URL_EXPIRY: parseNumber(getEnvValue('DEFAULT_URL_EXPIRY'), 259200), // 3天
   },
 
   // 限制参数 - 防止滥用
@@ -124,6 +128,13 @@ export const CONFIG = {
     SUPABASE_URL: getEnvValue('SUPABASE_URL'),
     SUPABASE_ANON_KEY: getEnvValue('SUPABASE_ANON_KEY'),
     BUCKET: getEnvValue('SUPABASE_STORAGE_BUCKET', 'svg-images'),
+  },
+
+  // 缓存配置
+  CACHE: {
+    ENABLED: parseBoolean(getEnvValue('CACHE_ENABLED'), true),
+    KV_TYPE: getEnvValue('CACHE_KV_TYPE', 'deno') as 'deno' | 'vercel' | 'cloudflare',
+    // TTL 复用 DEFAULTS.URL_EXPIRY，保持时间一致性
   },
 
   // 支持的格式

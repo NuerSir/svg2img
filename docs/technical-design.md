@@ -1,195 +1,337 @@
-# SVG2IMG 技术设计方案 (简化版)
+# 技术设计文档
 
-## 1. 项目概述
+本文档描述 SVG2IMG 的核心技术架构和设计决策。
 
-SVG2IMG 是一个轻量级的边缘函数服务，专注于将 SVG 转换为图片。设计原则：**简单、直接、无状态**。
+> **用户指南**: 使用说明请查看 [README.md](../README.md) | **API 参考**: [API.md](API.md) | **部署指南**: [DEPLOYMENT.md](DEPLOYMENT.md)
 
-## 2. 项目结构
+## 📐 设计原则
+
+- **简单直接**: 专注 SVG 转图片核心功能
+- **无状态**: 适合边缘计算和云函数环境
+- **可扩展**: 模块化设计，支持多平台部署
+- **性能优先**: 智能缓存，减少重复渲染
+
+## 🏗️ 系统架构
+
+### 核心技术栈
 
 ```
-├── index.ts          # 主入口文件，HTTP 服务和 SVG 渲染逻辑
+运行时: Deno (原生支持 TypeScript)
+渲染引擎: Browserless + Puppeteer
+存储: Supabase Storage (URL 模式)
+缓存: KV 存储 (Deno KV/Vercel KV/Cloudflare KV)
+```
+
+### 模块设计
+
+```
+├── index.ts          # HTTP 服务 + 主处理逻辑
 ├── config.ts         # 配置管理（三级配置系统）
-├── deps.ts          # 统一依赖管理
-├── utils.ts         # 工具函数（参数解析、错误处理、SVG 处理）
-├── test.ts          # 测试文件
-├── .env.example     # 环境变量配置示例
-└── docs/            # 文档目录
-    ├── technical-design.md    # 技术设计方案
-    └── implementation.md      # 实施计划
+├── utils.ts          # 工具函数 + 缓存系统
+└── deps.ts          # 依赖管理
 ```
 
-## 3. 核心技术方案
+## 🔄 处理流程
 
-### 3.1 依赖选择
-- **puppeteer-core**: 连接 browserless，不下载 Chrome 二进制
-- **Deno 原生 HTTP**: 使用 `serve()` 处理请求
-
-### 3.2 SVG 转图片流程
+### 请求处理链路
 
 ```mermaid
-graph LR
-    A[HTTP请求] --> B[解析参数]
-    B --> C[获取SVG内容]
-    C --> D[连接Browserless]
-    D --> E[创建HTML页面]
-    E --> F[setContent SVG]
+sequenceDiagram
+    participant Client
+    participant Service
+    participant Cache as KV Cache
+    participant Browserless
+    participant Storage
+
+    Client->>Service: HTTP Request
+    Service->>Service: 解析参数
+    Service->>Service: 生成缓存键
+    
+    alt 缓存启用
+        Service->>Cache: 检查缓存
+        alt 缓存命中
+            Cache-->>Service: 返回 URL
+            Service-->>Client: 302 重定向
+        else 缓存未命中
+            Service->>Service: 获取 SVG
+            Service->>Browserless: 连接并渲染
+            Browserless-->>Service: 图片数据
+            alt URL 模式
+                Service->>Storage: 上传图片
+                Storage-->>Service: 图片 URL
+                Service->>Cache: 缓存 URL
+                Service-->>Client: JSON 响应
+            else Binary 模式
+                Service-->>Client: 图片二进制
+            end
+        end
+    else 缓存禁用
+        Service->>Service: 获取 SVG
+        Service->>Browserless: 连接并渲染
+        Browserless-->>Service: 图片数据
+        Service-->>Client: 返回结果
+    end
+```
+
+### SVG 渲染流程
+
+```mermaid
+flowchart LR
+    A[HTTP 请求] --> B[解析参数]
+    B --> C[获取 SVG 内容]
+    C --> D[连接 Browserless]
+    D --> E[创建 HTML 页面]
+    E --> F[设置 SVG 内容]
     F --> G[等待渲染完成]
-    G --> H[screenshot截图]
+    G --> H[截图生成]
     H --> I[返回图片]
 ```
 
-### 3.3 核心实现原理
+## 🗄️ 缓存系统
 
-1. **连接 Browserless**:
-   ```typescript
-   const browser = await puppeteer.connect({
-     browserWSEndpoint: `${BROWSERLESS_URL}?token=${TOKEN}`
-   });
-   ```
+### 架构设计
 
-2. **SVG 渲染**:
-   ```typescript
-   const page = await browser.newPage();
-   await page.setContent(htmlTemplate); // HTML包含SVG
-   await page.waitForTimeout(waitTime); // 等待字体/样式加载
-   const screenshot = await page.screenshot(options);
-   ```
-
-3. **HTML 模板**:
-   ```html
-   <!DOCTYPE html>
-   <html>
-   <head>
-     <meta charset="utf-8">
-     <style>
-       body { margin: 0; padding: 0; background: ${backgroundColor}; }
-       svg { display: block; }
-     </style>
-   </head>
-   <body>${svgContent}</body>
-   </html>
-   ```
-
-## 4. API 设计
-
-### 4.1 GET 请求
-```
-GET /{svg-url}?scale={number}&format={string}&width={number}&height={number}
-```
-
-**URL 解析逻辑**:
-- 从请求路径中提取 SVG URL
-- 支持完整 URL：`/https://example.com/icon.svg`
-- 避免 URL 编码问题
-
-### 4.2 POST 请求
-```json
-{
-  "svg": "<svg>...</svg>",
-  "format": "png|jpg|webp|pdf",
-  "scale": 1,
-  "width": 800,
-  "height": 600,
-  "quality": 90,
-  "background_color": "#ffffff",
-  "waitFor": 1000,
-  "return_type": "binary|url",
-  "url_expiry": 3600
-}
+```mermaid
+classDiagram
+    class KVAdapter {
+        <<interface>>
+        +init() Promise~void~
+        +get(key) Promise~CacheEntry~
+        +set(key, value, ttl) Promise~void~
+        +delete(key) Promise~void~
+        +close() Promise~void~
+    }
+    
+    class DenoKVAdapter {
+        +init() Promise~void~
+        +get(key) Promise~CacheEntry~
+        +set(key, value, ttl) Promise~void~
+        +delete(key) Promise~void~
+        +close() Promise~void~
+    }
+    
+    class VercelKVAdapter {
+        +init() Promise~void~
+        +get(key) Promise~CacheEntry~
+        +set(key, value, ttl) Promise~void~
+        +delete(key) Promise~void~
+        +close() Promise~void~
+    }
+    
+    class CloudflareKVAdapter {
+        +init() Promise~void~
+        +get(key) Promise~CacheEntry~
+        +set(key, value, ttl) Promise~void~
+        +delete(key) Promise~void~
+        +close() Promise~void~
+    }
+    
+    class KVFactory {
+        +create(type) KVAdapter
+    }
+    
+    class CacheManager {
+        -kv: KVAdapter
+        +checkCacheAndRespond(key) Promise~string~
+        +setCacheEntry(key, value, ttl) Promise~void~
+    }
+    
+    KVAdapter <|-- DenoKVAdapter
+    KVAdapter <|-- VercelKVAdapter
+    KVAdapter <|-- CloudflareKVAdapter
+    KVFactory --> KVAdapter
+    CacheManager --> KVAdapter
 ```
 
-## 5. 配置管理
+### 缓存策略
 
-使用 `config.ts` 作为配置中心，支持三级配置优先级：
+**缓存键生成**:
+```typescript
+// 基于所有渲染参数的 SHA-256 哈希
+const params = { svg_content, format, scale, width, height, ... };
+const cacheKey = generateParamsHash(params);
+```
+
+**TTL 同步**:
+- 缓存过期时间 = Storage URL 过期时间
+- 确保缓存的 URL 始终有效
+
+**平台适配**:
+- ✅ **Deno KV**: 完全实现
+- 🚧 **Vercel KV**: 接口定义完成，实现待完成  
+- 🚧 **Cloudflare KV**: 接口定义完成，实现待完成
+
+## ⚙️ 配置系统
+
+### 三级配置优先级
+
+```mermaid
+flowchart TD
+    A[默认值] --> B[环境变量]
+    B --> C[代码覆盖]
+    C --> D[最终配置]
+    
+    A -.-> E[format: 'png'<br/>scale: 1<br/>...]
+    B -.-> F[BROWSERLESS_TOKEN<br/>DEFAULT_FORMAT<br/>...]
+    C -.-> G[config.ts overrides<br/>最高优先级]
+```
+
+### Token 池管理
 
 ```typescript
-// 配置覆盖接口
-interface ConfigOverrides {
-  USE_SELF_HOSTED?: string;
-  BROWSERLESS_TOKEN?: string;
-  DEFAULT_FORMAT?: string;
-  // ... 更多配置项
+class TokenManager {
+  // 支持多 Token 轮询
+  private tokens: string[] = CONFIG.BROWSERLESS.TOKENS;
+  private failedTokens: Map<string, number> = new Map();
+  
+  getAvailableToken(): string {
+    // 时间戳轮询 + 故障排除
+  }
+  
+  markTokenFailed(token: string): void {
+    // 标记失败 Token，1分钟后恢复
+  }
+}
+```
+
+## 🛡️ 安全设计
+
+### 域名控制
+
+```typescript
+// 白名单模式
+if (ALLOWED_DOMAINS.length > 0 && !ALLOWED_DOMAINS.includes(hostname)) {
+  throw createError("DOMAIN_NOT_ALLOWED");
 }
 
-// 配置覆盖 - 可直接在这里设置值
-const overrides: ConfigOverrides = {
-  // USE_SELF_HOSTED: "false",
-  // BROWSERLESS_TOKEN: "your-token",
+// 黑名单模式
+if (BLOCKED_DOMAINS.includes(hostname)) {
+  throw createError("DOMAIN_BLOCKED");
+}
+```
+
+### 输入验证
+
+```typescript
+// 参数范围验证
+const validation = {
+  scale: (v: number) => v >= 0.1 && v <= 10,
+  width: (v: number) => v >= 1 && v <= CONFIG.LIMITS.MAX_WIDTH,
+  height: (v: number) => v >= 1 && v <= CONFIG.LIMITS.MAX_HEIGHT,
+  quality: (v: number) => v >= 1 && v <= 100,
 };
 
-// 动态配置对象
-export const CONFIG = {
-  // Browserless 配置
-  BROWSERLESS: {
-    USE_SELF_HOSTED: parseBoolean(getEnvValue('USE_SELF_HOSTED'), false),
-    SELF_HOSTED_URL: getEnvValue('BROWSERLESS_SELF_HOSTED_URL', 'ws://localhost:3000'),
-    CLOUD_URL: getEnvValue('BROWSERLESS_CLOUD_URL', 'wss://production-sfo.browserless.io'),
-    get TOKEN(): string {
-      return tokenManager.getAvailableToken();
-    },
-    TOKENS: tokenManager.getAllTokens(),
-    markTokenFailed: (token: string) => tokenManager.markTokenFailed(token),
-  },
-  
-  // 默认参数
-  DEFAULTS: {
-    FORMAT: getEnvValue('DEFAULT_FORMAT', 'png') as ImageFormat,
-    SCALE: parseNumber(getEnvValue('DEFAULT_SCALE'), 1),
-    QUALITY: parseNumber(getEnvValue('DEFAULT_QUALITY'), 90),
-    BACKGROUND_COLOR: getEnvValue('DEFAULT_BACKGROUND_COLOR', '#ffffff'),
-    WAIT_FOR: parseNumber(getEnvValue('DEFAULT_WAIT_FOR'), 1000),
-    RETURN_TYPE: getEnvValue('DEFAULT_RETURN_TYPE', 'binary') as 'binary' | 'url',
-    URL_EXPIRY: parseNumber(getEnvValue('DEFAULT_URL_EXPIRY'), 3600),
-  },
-  
-  // 限制参数 - 防止滥用
-  LIMITS: {
-    MAX_WIDTH: parseNumber(getEnvValue('MAX_WIDTH'), 2048),
-    MAX_HEIGHT: parseNumber(getEnvValue('MAX_HEIGHT'), 2048),
-    MAX_SVG_SIZE: parseNumber(getEnvValue('MAX_SVG_SIZE'), 1024 * 1024), // 1MB
-    TIMEOUT: parseNumber(getEnvValue('TIMEOUT'), 30000), // 30秒
-  },
+// SVG 内容限制
+if (svgContent.length > CONFIG.LIMITS.MAX_SVG_SIZE) {
+  throw createError("SVG_TOO_LARGE");
+}
+```
 
-  // 安全配置
-  SECURITY: {
-    ALLOWED_DOMAINS: parseArray(getEnvValue('ALLOWED_DOMAINS'), []),
-    BLOCKED_DOMAINS: parseArray(getEnvValue('BLOCKED_DOMAINS'), ['localhost', '127.0.0.1']),
-  },
+## 🚀 性能优化
 
-  // 服务器配置
-  SERVER: {
-    PORT: parseNumber(getEnvValue('PORT'), 8000),
-  },
-  
-  // Supabase Storage 配置
-  STORAGE: {
-    SUPABASE_URL: getEnvValue('SUPABASE_URL'),
-    SUPABASE_ANON_KEY: getEnvValue('SUPABASE_ANON_KEY'),
-    BUCKET: getEnvValue('SUPABASE_STORAGE_BUCKET', 'svg-images'),
-  },
+### 资源管理
+
+```typescript
+// 确保浏览器实例清理
+try {
+  const browser = await puppeteer.connect({...});
+  const page = await browser.newPage();
+  // 处理逻辑
+} finally {
+  if (browser) await browser.close(); // 防止内存泄漏
+}
+```
+
+### 超时控制
+
+```typescript
+// 多层次超时
+const timeout = CONFIG.LIMITS.TIMEOUT; // 30秒
+
+// HTTP 请求级别
+const controller = new AbortController();
+setTimeout(() => controller.abort(), timeout);
+
+// Puppeteer 操作级别  
+await page.goto(url, { timeout: timeout / 2 });
+await page.waitForTimeout(waitFor);
+```
+
+## 🌐 部署适配
+
+### 平台特性
+
+| 平台 | KV 缓存 | 配置方式 | 特点 |
+|------|---------|----------|------|
+| **Deno Deploy** | ✅ Deno KV | 环境变量 | 原生支持，性能最佳 |
+| **Supabase** | ❌ | 代码覆盖 | Storage 集成良好 |
+| **Vercel** | 🚧 Vercel KV | 环境变量 | Edge Runtime |
+| **Cloudflare** | 🚧 CF KV | 环境变量 | 全球边缘节点 |
+
+### 环境检测
+
+```typescript
+// 运行时环境检测
+const platform = {
+  isDeno: typeof Deno !== "undefined",
+  isVercel: !!process?.env?.VERCEL,
+  isCloudflare: !!globalThis?.caches,
+  isSupabase: !!Deno?.env?.get("SUPABASE_URL"),
+};
+
+// 自动适配配置
+if (platform.isDeno && typeof Deno.openKv === "function") {
+  // 启用 Deno KV 缓存
+}
+```
+
+## 🔧 扩展点
+
+### 新平台适配
+
+1. **实现 KVAdapter 接口**
+2. **添加平台检测逻辑**  
+3. **更新 KVFactory**
+4. **添加配置文档**
+
+### 新功能扩展
+
+- **图片后处理**: 在 `renderSvgToImage` 后添加处理步骤
+- **批量处理**: 扩展 POST 接口支持多个 SVG
+- **Webhook**: 异步处理完成后回调
+
+## 📊 监控点
+
+### 关键指标
+
+- **响应时间**: 平均 < 2s
+- **成功率**: > 99.5%
+- **缓存命中率**: > 80%（Deno 平台）
+- **Browserless 用量**: 监控 Token 使用情况
+
+### 错误追踪
+
+```typescript
+// 结构化错误信息
+class SVG2ImageError extends Error {
+  constructor(
+    public code: string,
+    message: string,
+    public httpStatus: number = 500
+  ) {
+    super(message);
+  }
+}
+
+// 错误响应标准化
+const errorResponse = {
+  success: false,
+  error: {
+    code: error.code,
+    message: error.message,
+    timestamp: new Date().toISOString(),
+  }
 };
 ```
 
-## 6. 错误处理
-
-简化的错误处理策略：
-
-- **400**: 参数错误
-- **404**: SVG URL 无法访问
-- **422**: SVG 内容无效
-- **408**: 渲染超时
-- **500**: 内部错误
-
-## 7. 性能考虑
-
-1. **无连接池**: 每次请求独立创建浏览器实例
-2. **超时控制**: 避免长时间阻塞
-3. **内存管理**: 及时关闭浏览器实例
-4. **资源限制**: 限制输出图片最大尺寸
-
-## 8. 部署特点
-
-- **无状态**: 完全无状态设计
-- **配置简单**: 只需修改 config.ts
-- **依赖最少**: 只依赖 puppeteer-core
-- **兼容性强**: 支持 Supabase Edge Functions 和 Deno Deploy
+这个技术设计文档专注于架构决策和核心实现原理，为维护者和扩展开发提供技术参考。
