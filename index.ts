@@ -304,7 +304,7 @@ const configValidation = validateConfig();
 if (!configValidation.valid) {
   console.error("❌ 配置验证失败:");
   configValidation.errors.forEach(error => console.error(`  - ${error}`));
-  Deno.exit(1);
+  // Deno.exit(1);
 }
 
 // 初始化缓存
