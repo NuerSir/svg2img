@@ -66,6 +66,10 @@ const ERROR_DEFINITIONS = {
   DOMAIN_BLOCKED: { status: 403, message: "Access to this domain is blocked" },
   DOMAIN_NOT_ALLOWED: { status: 403, message: "Access to this domain is not allowed" },
   
+  // 授权错误 (401)
+  UNAUTHORIZED: { status: 401, message: "Unauthorized: Invalid or missing authentication token" },
+  MISSING_AUTH_TOKEN: { status: 401, message: "Missing authentication token" },
+
   // 资源不存在 (404)
   SVG_FETCH_FAILED: { status: 404, message: "Failed to fetch SVG" },
   
@@ -137,6 +141,43 @@ export interface RenderOptions {
  */
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * 验证请求的授权token
+ */
+export function validateAuthToken(request: Request, config: typeof CONFIG): void {
+  // 如果没有配置AUTH_TOKEN，跳过验证
+  if (!config.SECURITY?.AUTH_TOKEN) {
+    return;
+  }
+
+  const authToken = config.SECURITY.AUTH_TOKEN;
+  let providedToken = '';
+
+  if (request.method === 'GET') {
+    // GET请求从query参数获取token
+    const url = new URL(request.url);
+    providedToken = url.searchParams.get('token') || '';
+  } else if (request.method === 'POST') {
+    // POST请求从Authorization header获取token
+    const authHeader = request.headers.get('Authorization') || '';
+    if (authHeader.startsWith('Bearer ')) {
+      providedToken = authHeader.substring(7);
+    } else if (authHeader.startsWith('Token ')) {
+      providedToken = authHeader.substring(6);
+    } else {
+      providedToken = authHeader;
+    }
+  }
+
+  if (!providedToken) {
+    throw createError('MISSING_AUTH_TOKEN');
+  }
+
+  if (providedToken !== authToken) {
+    throw createError('UNAUTHORIZED');
+  }
 }
 
 /**

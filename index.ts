@@ -14,6 +14,7 @@ import {
   sleep,
   withTimeout,
   createError,
+  validateAuthToken,
   SVG2ImageError,
   CacheManager,
   type RenderOptions,
@@ -176,6 +177,9 @@ async function renderSvgToImage(svgContent: string, options: RenderOptions): Pro
 // 处理 GET 请求
 async function handleGetRequest(request: Request): Promise<Response> {
   try {
+    // 验证授权token
+    validateAuthToken(request, CONFIG);
+
     // 解析请求参数
     const params = parseGetRequest(request);
     const options = normalizeRenderOptions(params);
@@ -222,6 +226,9 @@ async function handleGetRequest(request: Request): Promise<Response> {
 // 处理 POST 请求
 async function handlePostRequest(request: Request): Promise<Response> {
   try {
+    // 验证授权token
+    validateAuthToken(request, CONFIG);
+
     // 解析请求体
     const body = await parsePostRequest(request);
     const options = normalizeRenderOptions(body);

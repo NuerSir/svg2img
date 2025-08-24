@@ -31,6 +31,9 @@ interface ConfigOverrides {
   ALLOWED_DOMAINS?: string;
   BLOCKED_DOMAINS?: string;
   
+  // 授权配置
+  AUTH_TOKEN?: string;
+
   // 服务器配置
   PORT?: string;
   
@@ -116,6 +119,7 @@ export const CONFIG = {
   SECURITY: {
     ALLOWED_DOMAINS: parseArray(getEnvValue('ALLOWED_DOMAINS'), []),
     BLOCKED_DOMAINS: parseArray(getEnvValue('BLOCKED_DOMAINS'), ['localhost', '127.0.0.1', '0.0.0.0', '10.0.0.0', '192.168.0.0']),
+    AUTH_TOKEN: getEnvValue('AUTH_TOKEN', ''), // 授权 Token，为空则不启用验证
   },
 
   // 服务器配置
